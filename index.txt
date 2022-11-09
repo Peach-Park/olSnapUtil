@@ -1,0 +1,275 @@
+import { Feature } from 'ol';
+import map, { getLayer } from './olmap.js';
+import { LineString, Point } from 'ol/geom.js'
+import { Circle, Fill, Stroke, Style } from 'ol/style.js';
+import { distance as coordinateDistance, squaredDistanceToSegment } from 'ol/coordinate.js';
+import { boundingExtent as olBoundingExtent } from 'ol/extent.js';
+import { fromUserCoordinate, toUserCoordinate } from 'ol/proj.js'
+
+const pixelTolerance = 10;
+const squaredCoordinateDistance = (coord1, coord2) => {
+    var dx = coord1[0] - coord2[0];
+    var dy = coord1[1] - coord2[1];
+    return dx * dx + dy * dy;
+};
+
+/* rBush : start */
+const toBBox = (item) => item;
+const search = (bbox) => {
+    let node = this.data;
+    const result = [];
+    if (!intersects(bbox, node)) return result;
+    const nodesToSearch = [];
+    while (node) {
+        for (let i = 0; i < node.children.length; i++) {
+            const child = node.children[i];
+            const childBBox = node.leaf ? toBBox(child) : child;
+            if (intersects(bbox, childBBox)) {
+                if (node.leaf) result.push(child);
+                else if (contains(bbox, childBBox)) all(child, result);
+                else nodesToSearch.push(child);
+            }
+        }
+        node = nodesToSearch.pop();
+    }
+    return result;
+}
+const searchIn = (bbox, lineCoords) => {
+
+    //
+    let dlayer = getLayer('markerLayer');
+    let dsource = dlayer.getSource();
+    let bbF = new Feature();
+    let { minX, minY, maxX, maxY } = bbox;
+    bbF.setGeometry(new LineString([
+        [maxX, minY],
+        [maxX, maxY],
+        [minX, maxY],
+        [minX, minY],
+        [maxX, minY],
+    ]));
+    bbF.setStyle(new Style({
+        stroke: new Stroke({
+            color: '#f00',
+            width: 5
+        })
+    }));
+    dsource.addFeature(bbF);
+    //
+
+    const result = [];
+    let hasAnyNode = false;
+    const mappedLineCoords = lineCoords.map(coord => {
+        let mmXY = {
+            minX: coord[0],
+            minY: coord[1],
+            maxX: coord[0],
+            maxY: coord[1]
+        };
+        if(!hasAnyNode) hasAnyNode = intersects(bbox, mmXY);
+        return mmXY;
+    });
+    if (!hasAnyNode) return result;
+    const nodesToSearch = [];
+
+    for (let i = 0; i < mappedLineCoords.length; i++) {
+        const isLeaf = mappedLineCoords.length-1 == i;
+        const child = mappedLineCoords[i];
+        const childBBox = isLeaf ? toBBox(child) : child;
+        if (intersects(bbox, childBBox)) {
+            if (isLeaf) result.push(child);
+            else if (contains(bbox, childBBox)) all(child, result);
+            else nodesToSearch.push(child);
+        }
+    }
+    return result;
+}
+function all (node, result, isLeaf) {
+    /*
+    const nodesToSearch = [];
+    while (node) {
+        if (node.leaf) result.push(...node.children);
+        else nodesToSearch.push(...node.children);
+
+        node = nodesToSearch.pop();
+    }
+    return result;
+    */
+    const nodesToSearch = [];
+    result.push(node);
+    return result;
+}
+
+function intersects(a, b) {
+    return b.minX <= a.maxX &&
+           b.minY <= a.maxY &&
+           b.maxX >= a.minX &&
+           b.maxY >= a.minY;
+}
+function contains(a, b) {
+    return a.minX <= b.minX &&
+           a.minY <= b.minY &&
+           b.maxX <= a.maxX &&
+           b.maxY <= a.maxY;
+}
+/* rBush : end */
+
+//------------------------------------------------------------------------------------------------------------------------------------->
+let nodes = [];
+export const snt = (pixel, pixelCoordinate, lineFeature) => {
+    // rBush.clear();
+    nodes = [];
+    insertMultiLineStringGeometry(lineFeature);
+
+    var lowerLeft = map.getCoordinateFromPixel([
+        pixel[0] - pixelTolerance,
+        pixel[1] + pixelTolerance,
+    ]);
+    var upperRight = map.getCoordinateFromPixel([
+        pixel[0] + pixelTolerance,
+        pixel[1] - pixelTolerance,
+    ]);
+    var box = olBoundingExtent([lowerLeft, upperRight]);
+    let segments = sntGetInExtent(box);
+    if(!segments.length)
+        return null;
+
+    var projection = map.getView().getProjection();
+    var projectedCoordinate = fromUserCoordinate(pixelCoordinate, projection);
+    var closestSegmentData;
+    var minSquaredDistance = Infinity;
+    let tempSegment = [];
+    for (var i = 0; i < segments.length; ++i) {
+        var segmentData = segments[i];
+        tempSegment[0] = fromUserCoordinate(segmentData.segment[0], projection);
+        tempSegment[1] = fromUserCoordinate(segmentData.segment[1], projection);
+        // console.log(tempSegment);
+        var delta = squaredDistanceToSegment(projectedCoordinate, tempSegment);
+        if (delta < minSquaredDistance) {
+            closestSegmentData = segmentData;
+            minSquaredDistance = delta;
+        }
+    }
+
+    //edge
+    //&& not circle
+    var closestSegment = closestSegmentData.segment;
+    tempSegment[0] = fromUserCoordinate(closestSegment[0], projection);
+    tempSegment[1] = fromUserCoordinate(closestSegment[1], projection);
+    let vertex = toUserCoordinate(closestOnSegment(projectedCoordinate, tempSegment), projection);
+    let vertexPixel = map.getPixelFromCoordinate(vertex);
+    let snapped = false;
+    if (coordinateDistance(pixel, vertexPixel) <= pixelTolerance) {
+        snapped = true;
+        // if (this.vertex_ && !isCircle) {
+            var pixel1 = map.getPixelFromCoordinate(closestSegment[0]);
+            var pixel2 = map.getPixelFromCoordinate(closestSegment[1]);
+            var squaredDist1 = squaredCoordinateDistance(vertexPixel, pixel1);
+            var squaredDist2 = squaredCoordinateDistance(vertexPixel, pixel2);
+            var dist = Math.sqrt(Math.min(squaredDist1, squaredDist2));
+            if (dist <= pixelTolerance) {
+                vertex =
+                    squaredDist1 > squaredDist2
+                        ? closestSegment[1]
+                        : closestSegment[0];
+                vertexPixel = map.getPixelFromCoordinate(vertex);
+            }
+        // }
+    }
+
+    // console.log(vertex);
+    let snapFeat = new Feature(new Point(vertex));
+    snapFeat.setStyle(new Style({
+        image: new Circle({
+            fill: new Fill({
+                color: '#57f8'
+            }),
+            radius: 7
+        })
+    }));
+    let source = getLayer('markerLayer').getSource();
+    source.addFeature(snapFeat)
+
+    return vertex;
+};
+const sntGetInExtent = (extent) => {
+    var bbox = {
+        minX: extent[0],
+        minY: extent[1],
+        maxX: extent[2],
+        maxY: extent[3],
+    };
+    // var items = rBush.rbush_.search(bbox);
+    var items = sntSearch(bbox);
+    return items.map(function (item) {
+        return item.value;
+    });
+};
+const sntSearch = (bbox) => {
+    let result = [];
+    for(let i = 0; i < nodes.length; i++) {
+        let nodeSeg = nodes[i].value.segment;
+        if(intersects(bbox, {
+            minX: nodeSeg[0][0] < nodeSeg[1][0] ? nodeSeg[0][0] : nodeSeg[1][0],
+            minY: nodeSeg[0][1] < nodeSeg[1][1] ? nodeSeg[0][1] : nodeSeg[1][1],
+            maxX: nodeSeg[0][0] > nodeSeg[1][0] ? nodeSeg[0][0] : nodeSeg[1][0],
+            maxY: nodeSeg[0][1] > nodeSeg[1][1] ? nodeSeg[0][1] : nodeSeg[1][1],
+        })) {
+            result.push(nodes[i]);
+
+            let ms = getLayer('markerLayer').getSource();
+            let feat = new Feature(new LineString(nodeSeg));
+            feat.setStyle(new Style({
+                stroke: new Stroke({
+                    width:5,
+                    color: '#70f8'
+                })
+            }))
+            ms.addFeature(feat);
+        }
+    }
+    return result;
+};
+
+const insertMultiLineStringGeometry = (feature) => {
+    var coordinates = feature.getGeometry().getCoordinates();
+    for (var i = 0, ii = coordinates.length - 1; i < ii; ++i) {
+        var segment = coordinates.slice(i, i + 2);
+        var segmentData = {
+            feature: feature,
+            segment: segment,
+        };
+        let [minX, minY, maxX, maxY] = olBoundingExtent(segment);
+        nodes.push({minX, minY, maxX, maxY, value: segmentData});
+    }
+};
+
+function closestOnSegment(coordinate, segment) {
+    var x0 = coordinate[0];
+    var y0 = coordinate[1];
+    var start = segment[0];
+    var end = segment[1];
+    var x1 = start[0];
+    var y1 = start[1];
+    var x2 = end[0];
+    var y2 = end[1];
+    var dx = x2 - x1;
+    var dy = y2 - y1;
+    var along = dx === 0 && dy === 0
+        ? 0
+        : (dx * (x0 - x1) + dy * (y0 - y1)) / (dx * dx + dy * dy || 0);
+    var x, y;
+    if (along <= 0) {
+        x = x1;
+        y = y1;
+    }
+    else if (along >= 1) {
+        x = x2;
+        y = y2;
+    }
+    else {
+        x = x1 + along * dx;
+        y = y1 + along * dy;
+    }
+    return [x, y];
+}

@@ -1,0 +1,16 @@
+{
+  "name": "snaputil",
+  "version": "1.0.0",
+  "description": "ol snap utillity",
+  "main": "index.js",
+  "scripts": {
+    "test": "test",
+    "uglify": "uglifyjs snapUtil.work.js -o snapUtil.min.js -c -m"
+  },
+  "author": "PeachPlumPark",
+  "license": "ISC",
+  "dependencies": {
+    "ol": "^6.1.1",
+    "uglify-js": "^3.13.10"
+  }
+}
